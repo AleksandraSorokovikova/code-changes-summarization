@@ -4,53 +4,125 @@ import pandas as pd
 from transformers import AutoTokenizer, AutoModel
 import torch
 from rerankers import Reranker
+from tqdm import tqdm
+import torch.nn.functional as F
+
+
+def mean_pooling(model_output: tuple, attention_mask: torch.Tensor) -> torch.Tensor:
+    input_mask_expanded = attention_mask[..., None].float()
+    token_embeddings = model_output[0] * input_mask_expanded
+    summed_embeddings = token_embeddings.sum(dim=1)
+    mask_sums = input_mask_expanded.sum(dim=1)
+    sentence_embeddings = summed_embeddings / mask_sums.clamp(min=1e-9)
+    return sentence_embeddings
+
+
+"""
+for mixedbread-code-cross-encoder use
+candidates = [
+    re.sub(r'def \w+\(.*\)', 'def some_function(...)', candidate) for candidate in candidates
+]
+"""
 
 
 class RAG:
-    def __init__(self, faiss_index_path, code_df):
+    def __init__(
+            self,
+            faiss_index_path: str,
+            code_df_path: str,
+            emb_model_name: str = "microsoft/graphcodebert-base",
+            reranker_model_name: str = "alexandraroze/codebert-cross-encoder",
+            device: str = "cpu",
+            num_of_docs_to_rerank: int = 20
+    ):
         self.faiss_index = faiss.read_index(faiss_index_path)
-        self.code_df = code_df
+        self.code_df = pd.read_csv(code_df_path)
         self.reranker = Reranker(
             model_type="cross-encoder",
-            model_name="microsoft/codebert-base"
+            model_name=reranker_model_name,
         )
+        self.model = AutoModel.from_pretrained(emb_model_name).to(device)
+        self.tokenizer = AutoTokenizer.from_pretrained(emb_model_name)
+        self.model.eval()
+        self.device = device
+        self.num_of_docs_to_rerank = num_of_docs_to_rerank
 
-    def search(self, query_embedding, rerank=True, k=10):
-        distances, indices = self.faiss_index.search(query_embedding, k)
-        relevant_rows = self.code_df.iloc[indices[0]]
-        if rerank:
-            relevant_rows = self.rerank(query_embedding, relevant_rows, k)
-        return relevant_rows
+    def get_embedding(self, code_snippet: str) -> np.ndarray:
+        with torch.no_grad():
+            encoded_input = self.tokenizer(
+                code_snippet, padding=True, truncation=True, return_tensors='pt'
+            ).to(self.device)
+            model_output = self.model(**encoded_input)
+            embedding = mean_pooling(model_output, encoded_input['attention_mask'])
+            embedding = F.normalize(embedding, p=2, dim=1).cpu().numpy()
+        return embedding
 
-    def rerank(self, query, relevant_rows, k=10):
-        results = self.reranker.rank(query, relevant_rows, doc_ids=[i for i in range(len(relevant_rows))])
-        return [result.text for result in results]
+    def rerank(self, query: str, relevant_rows: list[str], doc_ids: list[int]) -> list:
+        results = self.reranker.rank(query, relevant_rows, doc_ids=doc_ids)
+        return [result.doc_id for result in results]
 
+    def search(self, code_snippet: str, top_k: int = 5) -> tuple[str, str] | tuple[list[str], list[str]]:
+        query_embedding = self.get_embedding(code_snippet)
+        distances, indices = self.faiss_index.search(query_embedding, self.num_of_docs_to_rerank)
+        relevant_rows = self.code_df.iloc[indices[0]]["code"].tolist()
+        relevant_ids = self.rerank(code_snippet, relevant_rows, doc_ids=indices[0])
+        relevant_documentations = self.code_df.iloc[relevant_ids]["documentation"].tolist()[:top_k]
+        relevant_codes = self.code_df.iloc[relevant_ids]["code"].tolist()[:top_k]
+
+        if top_k == 1:
+            return relevant_documentations[0], relevant_codes[0]
+
+        return relevant_documentations, relevant_codes
 
 
 def build_rag(
-        code_snippets, documentations, code_df_path, faiss_index_path,
-        model_name="microsoft/codebert-base", batch_size=32
+        code_snippets: list[str],
+        documentations: list[str],
+        code_df_path: str,
+        faiss_index_path: str,
+        model_name="microsoft/graphcodebert-base",
+        batch_size=32
 ):
     code_df = pd.DataFrame({
         "index": range(len(code_snippets)),
         "code": code_snippets,
         "documentation": documentations
     })
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModel.from_pretrained(model_name)
+    model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
+    model.to(device)
+    model.max_seq_length = 512
     model.eval()
 
     embeddings = []
     with torch.no_grad():
-        for i in range(0, len(code_snippets), batch_size):
-            batch = code_snippets[i:i + batch_size]
-            inputs = tokenizer(batch, padding=True, truncation=True, return_tensors="pt")
-            outputs = model(**inputs)
-            batch_embeddings = outputs.last_hidden_state.mean(dim=1).cpu().numpy()
-            embeddings.append(batch_embeddings)
+        for i in tqdm(range(0, len(code_snippets), batch_size)):
+            try:
+                batch = code_snippets[i:i + batch_size]
+                encoded_input = tokenizer(batch, padding=True, truncation=True, return_tensors='pt').to(device)
+                model_output = model(**encoded_input)
+                batch_embeddings = mean_pooling(model_output, encoded_input['attention_mask'])
+                batch_embeddings = F.normalize(batch_embeddings, p=2, dim=1).cpu().numpy()
+                embeddings.append(batch_embeddings)
+            except Exception as e:
+                print(e)
+                del encoded_input, model_output, batch_embeddings
+                torch.cuda.empty_cache()
+                embeddings.append(np.zeros((len(batch), 768)))
+                model.to(device)
+                continue
+
     embeddings = np.vstack(embeddings)
+
+    zero_indices = np.where(~embeddings.any(axis=1))[0]
+    print(f"Found {len(zero_indices)} zero vectors")
+    if zero_indices > 0:
+        code_df = code_df.drop(zero_indices)
+        embeddings = np.delete(embeddings, zero_indices, axis=0)
+        print(len(code_df), embeddings.shape)
 
     dimension = embeddings.shape[1]
     faiss_index = faiss.IndexFlatIP(dimension)

@@ -1,5 +1,7 @@
 import streamlit as st
 import difflib
+from src.RAG import RAG
+from src.config import RETRIEVE_TOP_K
 from src.generate_documentation import generate_documentation, generate_change_description
 
 st.set_page_config(page_title="Code summarization", layout="wide")
@@ -22,6 +24,11 @@ def highlight_changes(old_code, new_code):
     return highlighted_code
 
 
+if "rag" not in st.session_state:
+    st.session_state.rag = RAG(
+        faiss_index_path="data/faiss_index_small.faiss",
+        code_df_path="data/code_df_small.csv"
+    )
 if "previous_code" not in st.session_state:
     st.session_state.previous_code = None
 if "current_code" not in st.session_state:
@@ -74,5 +81,9 @@ with col2:
 with col3:
     st.header("Documentation")
     if st.session_state.current_code:
-        documentation = generate_documentation("\n".join(st.session_state.current_code))
+        current_code = "\n".join(st.session_state.current_code)
+        similar_documentation, similar_code = st.session_state.rag.search(current_code, top_k=RETRIEVE_TOP_K)
+        documentation = generate_documentation(
+            current_code, similar_documentation, similar_code
+        )
         st.code(documentation)
