@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 from transformers import AutoTokenizer, AutoModel
 import torch
+import re
 from rerankers import Reranker
 from tqdm import tqdm
 import torch.nn.functional as F
@@ -17,23 +18,17 @@ def mean_pooling(model_output: tuple, attention_mask: torch.Tensor) -> torch.Ten
     return sentence_embeddings
 
 
-"""
-for mixedbread-code-cross-encoder use
-candidates = [
-    re.sub(r'def \w+\(.*\)', 'def some_function(...)', candidate) for candidate in candidates
-]
-"""
-
-
 class RAG:
     def __init__(
             self,
             faiss_index_path: str,
             code_df_path: str,
             emb_model_name: str = "microsoft/graphcodebert-base",
-            reranker_model_name: str = "alexandraroze/codebert-cross-encoder",
+            reranker_model_name: str = "alexandraroze/mixedbread-code-cross-encoder",
             device: str = "cpu",
-            num_of_docs_to_rerank: int = 20
+            num_of_docs_to_rerank: int = 10,
+            change_def_to_some_function: bool = False,
+            add_doc_to_code: bool = False
     ):
         self.faiss_index = faiss.read_index(faiss_index_path)
         self.code_df = pd.read_csv(code_df_path)
@@ -41,11 +36,13 @@ class RAG:
             model_type="cross-encoder",
             model_name=reranker_model_name,
         )
+        self.change_def_to_some_function = change_def_to_some_function
         self.model = AutoModel.from_pretrained(emb_model_name).to(device)
         self.tokenizer = AutoTokenizer.from_pretrained(emb_model_name)
         self.model.eval()
         self.device = device
         self.num_of_docs_to_rerank = num_of_docs_to_rerank
+        self.add_doc_to_code = add_doc_to_code
 
     def get_embedding(self, code_snippet: str) -> np.ndarray:
         with torch.no_grad():
@@ -58,13 +55,26 @@ class RAG:
         return embedding
 
     def rerank(self, query: str, relevant_rows: list[str], doc_ids: list[int]) -> list:
+        if self.change_def_to_some_function:
+            query = re.sub(r'def \w+\(.*\)', 'def some_function(...)', query)
+            relevant_rows = [
+                re.sub(r'def \w+\(.*\)', 'def some_function(...)', row) for row in relevant_rows
+            ]
         results = self.reranker.rank(query, relevant_rows, doc_ids=doc_ids)
+        print([r.score for r in results])
         return [result.doc_id for result in results]
 
     def search(self, code_snippet: str, top_k: int = 5) -> tuple[str, str] | tuple[list[str], list[str]]:
         query_embedding = self.get_embedding(code_snippet)
         distances, indices = self.faiss_index.search(query_embedding, self.num_of_docs_to_rerank)
-        relevant_rows = self.code_df.iloc[indices[0]]["code"].tolist()
+
+        if self.add_doc_to_code:
+            relevant_code_rows = self.code_df.iloc[indices[0]]["code"].tolist()
+            relevant_doc_rows = self.code_df.iloc[indices[0]]["documentation"].tolist()
+            relevant_rows = [f"{doc}\n\n{code}" for doc, code in zip(relevant_doc_rows, relevant_code_rows)]
+        else:
+            relevant_rows = self.code_df.iloc[indices[0]]["code"].tolist()
+
         relevant_ids = self.rerank(code_snippet, relevant_rows, doc_ids=indices[0])
         relevant_documentations = self.code_df.iloc[relevant_ids]["documentation"].tolist()[:top_k]
         relevant_codes = self.code_df.iloc[relevant_ids]["code"].tolist()[:top_k]

@@ -1,7 +1,11 @@
+import os
+os.environ["OMP_NUM_THREADS"] = "1"
+
+
 import streamlit as st
 import difflib
 from src.RAG import RAG
-from src.config import RETRIEVE_TOP_K
+from src.config import *
 from src.generate_documentation import generate_documentation, generate_documentation_diff_description
 
 st.set_page_config(page_title="Code summarization", layout="wide")
@@ -26,8 +30,13 @@ def highlight_changes(old_code, new_code):
 
 if "rag" not in st.session_state:
     st.session_state.rag = RAG(
-        faiss_index_path="data/faiss_index_small.faiss",
-        code_df_path="data/code_df_small.csv"
+        faiss_index_path=FAISS_INDEX_PATH,
+        code_df_path=CODE_DF_PATH,
+        reranker_model_name=RERANKER_MODEL_NAME,
+        change_def_to_some_function=CHANGE_DEF_TO_SOME_FUNCTION,
+        emb_model_name=EMBEDDINGS_MODEL_NAME,
+        num_of_docs_to_rerank=NUM_OF_DOCS_TO_RERANK,
+        add_doc_to_code=ADD_DOC_TO_CODE
     )
 if "previous_code" not in st.session_state:
     st.session_state.previous_code = None
@@ -71,7 +80,7 @@ with col2:
             "\n".join(st.session_state.previous_code)
         )
         st.subheader("Changed description")
-        st.code(change_description)
+        st.markdown(change_description)
 
         highlighted_code = highlight_changes(st.session_state.previous_code, st.session_state.current_code)
         st.subheader("Changes log")
@@ -83,7 +92,11 @@ with col3:
     if st.session_state.current_code:
         current_code = "\n".join(st.session_state.current_code)
         similar_documentation, similar_code = st.session_state.rag.search(current_code, top_k=RETRIEVE_TOP_K)
+        for c, d in zip(similar_documentation, similar_code):
+            print(c)
+            print(d)
+            print("______________________")
         documentation = generate_documentation(
             current_code, similar_documentation, similar_code
         )
-        st.code(documentation)
+        st.markdown(documentation)
