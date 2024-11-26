@@ -2,7 +2,7 @@ import streamlit as st
 import difflib
 from src.RAG import RAG
 from src.config import RETRIEVE_TOP_K
-from src.generate_documentation import generate_documentation, generate_change_description
+from src.generate_documentation import generate_documentation, generate_documentation_diff_description
 
 st.set_page_config(page_title="Code summarization", layout="wide")
 
@@ -66,7 +66,7 @@ with col1:
 with col2:
     st.header("Code changes")
     if st.session_state.current_code and st.session_state.previous_code:
-        change_description = generate_change_description(
+        change_description = generate_documentation_diff_description(
             "\n".join(st.session_state.current_code),
             "\n".join(st.session_state.previous_code)
         )
