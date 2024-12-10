@@ -61,10 +61,14 @@ class RAG:
                 re.sub(r'def \w+\(.*\)', 'def some_function(...)', row) for row in relevant_rows
             ]
         results = self.reranker.rank(query, relevant_rows, doc_ids=doc_ids)
-        print([r.score for r in results])
         return [result.doc_id for result in results]
 
-    def search(self, code_snippet: str, top_k: int = 5) -> tuple[str, str] | tuple[list[str], list[str]]:
+    def search(
+            self,
+            code_snippet: str,
+            top_k: int = 5,
+            rerank: bool = True
+    ) -> tuple[str, str] | tuple[list[str], list[str]]:
         query_embedding = self.get_embedding(code_snippet)
         distances, indices = self.faiss_index.search(query_embedding, self.num_of_docs_to_rerank)
 
@@ -75,7 +79,10 @@ class RAG:
         else:
             relevant_rows = self.code_df.iloc[indices[0]]["code"].tolist()
 
-        relevant_ids = self.rerank(code_snippet, relevant_rows, doc_ids=indices[0])
+        if rerank:
+            relevant_ids = self.rerank(code_snippet, relevant_rows, doc_ids=indices[0])
+        else:
+            relevant_ids = indices[0]
         relevant_documentations = self.code_df.iloc[relevant_ids]["documentation"].tolist()[:top_k]
         relevant_codes = self.code_df.iloc[relevant_ids]["code"].tolist()[:top_k]
 

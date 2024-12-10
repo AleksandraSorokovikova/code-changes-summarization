@@ -1,5 +1,4 @@
 from torch.utils.data import Dataset, DataLoader
-from transformers import AutoTokenizer
 from sklearn.metrics import roc_auc_score, f1_score, accuracy_score, precision_score, recall_score
 from tqdm.notebook import tqdm
 from transformers import AutoModelForSequenceClassification
@@ -80,6 +79,7 @@ def create_balanced_dataset(data_dict, model, tokenizer, device='cpu'):
     })
     return df
 
+
 def initialize_qwen_model():
     model_name = "Qwen/Qwen2.5-Coder-14B-Instruct"
     model = AutoModelForCausalLM.from_pretrained(
@@ -90,10 +90,12 @@ def initialize_qwen_model():
     tokenizer = AutoTokenizer.from_pretrained(model_name)
     return model, tokenizer
 
+
 def generate_solution(task_description, model, tokenizer, max_new_tokens=512):
     prompt = task_description
     messages = [
-        {"role": "system", "content": "Your task is to generate python code for provided problem. Write ONLY code without any additional text comments."},
+        {"role": "system",
+         "content": "Your task is to generate python code for provided problem. Write ONLY code without any additional text comments."},
         {"role": "user", "content": prompt}
     ]
     text = tokenizer.apply_chat_template(
@@ -174,8 +176,10 @@ def validate_model(model, dataloader, device):
 
 
 def train_model_with_validation(
-        model, train_dataloader, val_dataloader, criterion, optimizer, device, num_epochs=3
+        model, train_dataloader, val_dataloader, criterion,
+        optimizer, device, num_epochs=3, metrics_file_path=None
 ):
+    best_metrics = [0.0, 0.0, 0.0, 0.0, 0.0]
     for epoch in range(num_epochs):
         model.train()
         epoch_loss = 0.0
@@ -195,18 +199,35 @@ def train_model_with_validation(
         print(f"Epoch {epoch + 1}/{num_epochs} - Train Loss: {epoch_loss / len(train_dataloader):.4f}")
 
         auc, f1, recall, precision, accuracy = validate_model(model, val_dataloader, device)
-        print(f"Epoch {epoch + 1}/{num_epochs} - Val AUC: {auc:.4f}, Val F1: {f1:.4f}")
-        print(f"Val Accuracy: {accuracy:.4f} - Val Recall: {recall:.4f}, Val Precision: {precision:.4f}")
+        if f1 > best_metrics[1]:
+            best_metrics = [auc, f1, recall, precision, accuracy]
+
+        if metrics_file_path:
+            with open(metrics_file_path, "a") as f:
+                f.write(f"""Epoch {epoch + 1}/{num_epochs} - Val AUC: {auc:.4f}, Val F1: {f1:.4f}
+                        Val Accuracy: {accuracy:.4f} - Val Recall: {recall:.4f}, Val Precision: {precision:.4f}\n\n""")
+        else:
+            print(f"Epoch {epoch + 1}/{num_epochs} - Val AUC: {auc:.4f}, Val F1: {f1:.4f}")
+            print(f"Val Accuracy: {accuracy:.4f} - Val Recall: {recall:.4f}, Val Precision: {precision:.4f}")
+
+    return best_metrics
 
 
-def launch_training():
+def launch_training(
+        model_name, dataset_path="../data/cross_encoder_dataset_new.csv",
+        saving_model_name=None, num_epochs=3, batch_size=32, lr=1e-5, metrics_file_path=None
+):
     # "microsoft/codebert-base",
     # "mixedbread-ai/mxbai-rerank-base-v1",
     # "microsoft/graphcodebert-base",
     # Salesforce/codet5-large
-    model_name = "mixedbread-ai/mxbai-rerank-base-v1"
 
-    df = pd.read_csv("../data/cross_encoder_dataset_new.csv")
+    if metrics_file_path:
+        # create file
+        with open(metrics_file_path, "w") as f:
+            f.write("Metrics\n")
+
+    df = pd.read_csv(dataset_path)
     queries = df["query"].tolist()
     candidates = df["candidate"].tolist()
     labels = df["label"].tolist()
@@ -220,8 +241,8 @@ def launch_training():
     train_dataset = QueryCandidateDataset(train_queries, train_candidates, train_labels, tokenizer)
     val_dataset = QueryCandidateDataset(val_queries, val_candidates, val_labels, tokenizer)
 
-    train_dataloader = DataLoader(train_dataset, batch_size=32, shuffle=True)
-    val_dataloader = DataLoader(val_dataset, batch_size=32, shuffle=False)
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = AutoModelForSequenceClassification.from_pretrained(
@@ -230,34 +251,24 @@ def launch_training():
     )
     model = model.to(device)
     criterion = nn.BCEWithLogitsLoss()
-    optimizer = AdamW(model.parameters(), lr=5e-6)
+    optimizer = AdamW(model.parameters(), lr=lr)
 
-    # head_params = []
-    # base_params = []
-
-    # for name, param in model.named_parameters():
-    #     if "classifier" in name:
-    #         head_params.append(param)
-    #     elif param.requires_grad:
-    #         base_params.append(param)
-
-    # optimizer = AdamW([
-    #     {"params": base_params, "lr": 1e-5},
-    #     {"params": head_params, "lr": 1e-4},
-    # ])
-
-    train_model_with_validation(
+    best_metrics = train_model_with_validation(
         model=model,
         train_dataloader=train_dataloader,
         val_dataloader=val_dataloader,
         criterion=criterion,
         optimizer=optimizer,
         device=device,
-        num_epochs=8,
+        num_epochs=num_epochs,
+        metrics_file_path=metrics_file_path,
     )
 
-    model.save_pretrained("./mixedbread-code-cross-encoder")
-    tokenizer.save_pretrained("./mixedbread-code-cross-encoder")
+    if saving_model_name:
+        model.save_pretrained(f"./{saving_model_name}")
+        tokenizer.save_pretrained(f"./{saving_model_name}")
+
+    return best_metrics
 
 
 def launch_qwen():
