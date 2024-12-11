@@ -34,6 +34,14 @@ def get_embedding(model, tokenizer, code_snippet, device='cpu'):
 
 
 def create_balanced_dataset(data_dict, model, tokenizer, device='cpu'):
+    """
+    Create a balanced dataset for training a cross-encoder model
+    Uses hard negative mining with embeddings
+    :param data_dict: dictionary with keys as classes and values as lists of samples
+    :param model: model for embeddings
+    :param tokenizer: tokenizer for embeddings
+    :param device: device for embeddings
+    """
     embeddings = {}
     for key, values in tqdm(data_dict.items()):
         embeddings[key] = {value: get_embedding(model, tokenizer, value, device) for value in values}
@@ -81,6 +89,9 @@ def create_balanced_dataset(data_dict, model, tokenizer, device='cpu'):
 
 
 def initialize_qwen_model():
+    """
+    Initialize Qwen model for code generation
+    """
     model_name = "Qwen/Qwen2.5-Coder-14B-Instruct"
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
@@ -92,6 +103,13 @@ def initialize_qwen_model():
 
 
 def generate_solution(task_description, model, tokenizer, max_new_tokens=512):
+    """
+    Generate solution for a task description
+    :param task_description: task description
+    :param model: model for code generation
+    :param tokenizer: tokenizer for code generation
+    :param max_new_tokens: maximum number of tokens to generate
+    """
     prompt = task_description
     messages = [
         {"role": "system",
@@ -120,6 +138,13 @@ def generate_solution(task_description, model, tokenizer, max_new_tokens=512):
 
 class QueryCandidateDataset(Dataset):
     def __init__(self, queries, candidates, labels, tokenizer, max_length=512):
+        """
+        Dataset for training a cross-encoder model
+        :param queries: list of queries
+        :param candidates: list of candidates
+        :param labels: list of labels
+        :param tokenizer: tokenizer for encoding
+        """
         self.queries = queries
         self.candidates = candidates
         self.labels = labels
@@ -149,6 +174,12 @@ class QueryCandidateDataset(Dataset):
 
 
 def validate_model(model, dataloader, device):
+    """
+    Validate the model on a dataset
+    :param model: model for validation
+    :param dataloader: dataloader for validation
+    :param device: device for validation
+    """
     model.eval()
     all_labels = []
     all_predictions = []
@@ -179,6 +210,17 @@ def train_model_with_validation(
         model, train_dataloader, val_dataloader, criterion,
         optimizer, device, num_epochs=3, metrics_file_path=None
 ):
+    """
+    Train a model with validation
+    :param model: model for training
+    :param train_dataloader: dataloader for training
+    :param val_dataloader: dataloader for validation
+    :param criterion: loss function
+    :param optimizer: optimizer
+    :param device: device for training
+    :param num_epochs: number of epochs
+    :param metrics_file_path: path to the file for metrics
+    """
     best_metrics = [0.0, 0.0, 0.0, 0.0, 0.0]
     for epoch in range(num_epochs):
         model.train()
@@ -221,6 +263,17 @@ def launch_training(
     # "mixedbread-ai/mxbai-rerank-base-v1",
     # "microsoft/graphcodebert-base",
     # Salesforce/codet5-large
+
+    """
+    Launch training of a cross-encoder model
+    :param model_name: name of the model
+    :param dataset_path: path to the dataset
+    :param saving_model_name: name for saving the model
+    :param num_epochs: number of epochs
+    :param batch_size: batch size
+    :param lr: learning rate
+    :param metrics_file_path: path to the file for metrics
+    """
 
     if metrics_file_path:
         # create file
@@ -272,6 +325,9 @@ def launch_training(
 
 
 def launch_qwen():
+    """
+    Launch Qwen model for code generation and create a dataset for training a cross-encoder model
+    """
     qwen_model, qwen_tokenizer = initialize_qwen_model()
     dataset = load_dataset("google-research-datasets/mbpp", "full")
 

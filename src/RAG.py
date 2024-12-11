@@ -10,6 +10,12 @@ import torch.nn.functional as F
 
 
 def mean_pooling(model_output: tuple, attention_mask: torch.Tensor) -> torch.Tensor:
+    """
+    Mean pooling of the model output
+    :param model_output: model output
+    :param attention_mask: attention mask
+    :return: mean pooled output
+    """
     input_mask_expanded = attention_mask[..., None].float()
     token_embeddings = model_output[0] * input_mask_expanded
     summed_embeddings = token_embeddings.sum(dim=1)
@@ -30,6 +36,16 @@ class RAG:
             change_def_to_some_function: bool = False,
             add_doc_to_code: bool = False
     ):
+        """
+        :param faiss_index_path: path to the faiss index file
+        :param code_df_path: path to the csv file with code snippets and documentations
+        :param emb_model_name: name of the model to use for embeddings
+        :param reranker_model_name: name of the model to use for reranking
+        :param device: device to use for embeddings
+        :param num_of_docs_to_rerank: number of documents to rerank
+        :param change_def_to_some_function: whether to change function definitions to some_function
+        :param add_doc_to_code: whether to add documentation to the code
+        """
         self.faiss_index = faiss.read_index(faiss_index_path)
         self.code_df = pd.read_csv(code_df_path)
         self.reranker = Reranker(
@@ -45,6 +61,11 @@ class RAG:
         self.add_doc_to_code = add_doc_to_code
 
     def get_embedding(self, code_snippet: str) -> np.ndarray:
+        """
+        Get the embedding of the code snippet
+        :param code_snippet: code snippet
+        :return: embedding of the code snippet
+        """
         with torch.no_grad():
             encoded_input = self.tokenizer(
                 code_snippet, padding=True, truncation=True, return_tensors='pt'
@@ -55,6 +76,13 @@ class RAG:
         return embedding
 
     def rerank(self, query: str, relevant_rows: list[str], doc_ids: list[int]) -> list:
+        """
+        Rerank the relevant rows
+        :param query: query
+        :param relevant_rows: relevant rows
+        :param doc_ids: document ids
+        :return: reranked document ids
+        """
         if self.change_def_to_some_function:
             query = re.sub(r'def \w+\(.*\)', 'def some_function(...)', query)
             relevant_rows = [
@@ -69,6 +97,13 @@ class RAG:
             top_k: int = 5,
             rerank: bool = True
     ) -> tuple[str, str] | tuple[list[str], list[str]]:
+        """
+        Search for the most relevant documentation and code snippets
+        :param code_snippet: code snippet
+        :param top_k: number of results to return
+        :param rerank: whether to rerank the results
+        :return: tuple of the most relevant documentation and code snippets
+        """
         query_embedding = self.get_embedding(code_snippet)
         distances, indices = self.faiss_index.search(query_embedding, self.num_of_docs_to_rerank)
 
@@ -100,6 +135,15 @@ def build_rag(
         model_name="microsoft/graphcodebert-base",
         batch_size=32
 ):
+    """
+    Build the RAG model
+    :param code_snippets: list of code snippets
+    :param documentations: list of documentations
+    :param code_df_path: path to the csv file with code snippets and documentations
+    :param faiss_index_path: path to the faiss index file
+    :param model_name: name of the model to use for embeddings
+    :param batch_size: batch size
+    """
     code_df = pd.DataFrame({
         "index": range(len(code_snippets)),
         "code": code_snippets,
